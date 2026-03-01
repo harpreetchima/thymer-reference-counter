@@ -1,0 +1,20 @@
+{
+  "ver": 1,
+  "version": "0.1.0",
+  "name": "Reference Counter",
+  "icon": "ti-hash",
+  "description": "Inline reference counters for record links",
+  "custom": {
+    "enabledByDefault": true,
+    "hoverOnlyByDefault": false,
+    "countMode": "lines",
+    "minCount": 1,
+    "showZero": false,
+    "showSelf": false,
+    "maxResults": 250,
+    "cacheTtlMs": 120000,
+    "refreshDebounceMs": 180,
+    "opacity": 0.55,
+    "fontScale": "small"
+  }
+}
