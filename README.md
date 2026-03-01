@@ -1,16 +1,16 @@
 # Thymer Reference Counter
 
-Adds Roam-style inline reference counters next to record references in the editor.
+Adds inline reference counters next to record references in the editor.
 
 Built for [Thymer](https://thymer.com/) using the [Thymer Plugin SDK](https://github.com/thymerapp/thymer-plugin-sdk).
 
 ## What it does
 
 - Adds a small superscript count next to each inline record reference.
-- Count mode can be based on:
+- Count mode based on:
   - `lines`: number of matching line-item references (`@linkto = "<guid>"`)
   - `records`: number of records that back-reference the target record
-- Counters are display-only (non-clickable) to avoid text-flow shifts while editing.
+- Counters are display-only (non-clickable).
 - Includes command-palette toggles for:
   - inline counters on/off
   - hover-only display on/off
