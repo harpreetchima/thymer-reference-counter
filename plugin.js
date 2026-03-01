@@ -249,10 +249,11 @@ class Plugin extends AppPlugin {
       .trc-refcount-badge {
         border: 0;
         background: transparent;
-        color: var(--text-detail, var(--text-muted, var(--text-secondary, inherit)));
+        color: var(--text-muted, var(--text-default, var(--text, inherit)));
         font-weight: 650;
         line-height: 1;
-        padding: 0;
+        padding: 0 1px;
+        border-radius: var(--radius-normal, 4px);
         opacity: ${this._opacity};
         cursor: pointer;
       }
@@ -695,11 +696,15 @@ class Plugin extends AppPlugin {
 
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'trc-refcount-badge button-none';
+    btn.className = 'trc-refcount-badge button-none button-small button-minimal-hover text-details tooltip';
     btn.textContent = this.formatCountLabel(info);
 
     const recordName = this.getOrLoadRecordName(guid);
-    btn.title = `${info.count}${info.capped ? '+' : ''} references to ${recordName} (click to open)`;
+    const tooltip = `${info.count}${info.capped ? '+' : ''} references to ${recordName}`;
+    btn.title = `${tooltip} (Ctrl/Cmd-click to open in a new panel)`;
+    btn.dataset.tooltip = tooltip;
+    btn.dataset.tooltipDir = 'top';
+    btn.setAttribute('aria-label', tooltip);
 
     btn.addEventListener('click', (ev) => {
       ev.preventDefault();
@@ -732,31 +737,31 @@ class Plugin extends AppPlugin {
     const workspaceGuid = this.getWorkspaceGuid?.() || null;
     if (!workspaceGuid) return;
 
-    const openInCurrent = ev?.shiftKey === true;
-    if (openInCurrent) {
-      panel.navigateTo({
-        type: 'edit_panel',
-        rootId: guid,
-        subId: null,
-        workspaceGuid
-      });
-      this.ui.setActivePanel(panel);
+    const openInNew = ev?.metaKey === true || ev?.ctrlKey === true;
+    if (openInNew) {
+      try {
+        const newPanel = await this.ui.createPanel({ afterPanel: panel });
+        if (!newPanel) return;
+        newPanel.navigateTo({
+          type: 'edit_panel',
+          rootId: guid,
+          subId: null,
+          workspaceGuid
+        });
+        this.ui.setActivePanel(newPanel);
+      } catch (e) {
+        // ignore
+      }
       return;
     }
 
-    try {
-      const newPanel = await this.ui.createPanel({ afterPanel: panel });
-      if (!newPanel) return;
-      newPanel.navigateTo({
-        type: 'edit_panel',
-        rootId: guid,
-        subId: null,
-        workspaceGuid
-      });
-      this.ui.setActivePanel(newPanel);
-    } catch (e) {
-      // ignore
-    }
+    panel.navigateTo({
+      type: 'edit_panel',
+      rootId: guid,
+      subId: null,
+      workspaceGuid
+    });
+    this.ui.setActivePanel(panel);
   }
 
   async getCountInfoForGuid(guid) {
