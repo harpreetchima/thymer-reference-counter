@@ -10,8 +10,7 @@ Built for [Thymer](https://thymer.com/) using the [Thymer Plugin SDK](https://gi
 - Count mode can be based on:
   - `lines`: number of matching line-item references (`@linkto = "<guid>"`)
   - `records`: number of records that back-reference the target record
-- Clicking a counter opens the referenced record in the current panel.
-- Ctrl/Cmd-click opens the referenced record in a new adjacent panel.
+- Counters are display-only (non-clickable) to avoid text-flow shifts while editing.
 - Includes command-palette toggles for:
   - inline counters on/off
   - hover-only display on/off
@@ -52,7 +51,7 @@ Edit `custom` in `plugin.json`:
 ## Notes
 
 - This plugin decorates editor DOM elements and uses record-guid discovery heuristics.
-- Styling is native-first: it reuses Thymer button/tooltip/text classes and color tokens where possible.
+- Styling is native-first: it uses Thymer text/color tokens and keeps counters visually tied to reference arrows.
 - If Thymer changes editor markup in future versions, selector tuning may be needed.
 - For `countMode = "lines"`, very large backlink sets are capped by `maxResults` and shown as `N+`.
 
@@ -60,8 +59,7 @@ Edit `custom` in `plugin.json`:
 
 1. Open a page with several inline record references.
 2. Confirm superscript counters appear beside those references.
-3. Click a counter and confirm the referenced record opens in the current panel.
-4. Ctrl/Cmd-click a counter and confirm it opens in a new adjacent panel.
-5. Run `Reference Counter: Toggle hover-only counters` and confirm counters hide until line hover.
-6. Run `Reference Counter: Toggle inline counters` and confirm badges disappear/return.
-7. Edit a reference, then verify counts refresh after a short delay.
+3. Confirm counters do not push/reflow adjacent text while typing.
+4. Run `Reference Counter: Toggle hover-only counters` and confirm counters hide until line hover.
+5. Run `Reference Counter: Toggle inline counters` and confirm badges disappear/return.
+6. Edit a reference, then verify counts refresh after a short delay.

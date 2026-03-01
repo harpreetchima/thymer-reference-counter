@@ -10,6 +10,7 @@ class Plugin extends AppPlugin {
     this._countCache = new Map();
     this._recordExistsCache = new Map();
     this._recordNameCache = new Map();
+    this._lineRefGuids = new Map();
 
     this._storageKeyEnabled = 'thymer_reference_counter_enabled_v1';
     this._storageKeyHoverOnly = 'thymer_reference_counter_hover_only_v1';
@@ -81,6 +82,7 @@ class Plugin extends AppPlugin {
     this._countCache.clear();
     this._recordExistsCache.clear();
     this._recordNameCache.clear();
+    this._lineRefGuids.clear();
   }
 
   registerCommands() {
@@ -140,10 +142,10 @@ class Plugin extends AppPlugin {
       this.events.on('lineitem.updated', (ev) => this.handleLineItemUpdated(ev))
     );
     this._eventHandlerIds.push(
-      this.events.on('lineitem.deleted', () => this.handleReferenceMutation('lineitem.deleted'))
+      this.events.on('lineitem.deleted', (ev) => this.handleLineItemDeleted(ev))
     );
     this._eventHandlerIds.push(
-      this.events.on('record.updated', () => this.handleReferenceMutation('record.updated'))
+      this.events.on('record.updated', (ev) => this.handleRecordUpdated(ev))
     );
 
     this._eventHandlerIds.push(
@@ -237,31 +239,31 @@ class Plugin extends AppPlugin {
 
   injectCss() {
     this.ui.injectCSS(`
+      .trc-ref-anchor {
+        position: relative;
+      }
+
       .trc-refcount-badge-wrap {
+        position: absolute;
+        left: auto;
+        right: 2.5px;
+        top: 0;
+        transform: translate(8px, -0.34em);
         display: inline-flex;
-        align-items: flex-start;
-        vertical-align: super;
+        align-items: center;
         line-height: 1;
-        margin-left: 2px;
         user-select: none;
+        pointer-events: none;
+        z-index: 2;
       }
 
       .trc-refcount-badge {
-        border: 0;
-        background: transparent;
         color: var(--text-muted, var(--text-default, var(--text, inherit)));
         font-weight: 650;
         line-height: 1;
-        padding: 0 1px;
-        border-radius: var(--radius-normal, 4px);
+        padding: 0;
         opacity: ${this._opacity};
-        cursor: pointer;
-      }
-
-      .trc-refcount-badge:hover {
-        opacity: 1;
-        color: var(--ed-link-color, var(--link-color, var(--accent, inherit)));
-        text-decoration: underline;
+        pointer-events: none;
       }
 
       .trc-refcount-badge-wrap.trc-size-xsmall .trc-refcount-badge { font-size: 9px; }
@@ -271,14 +273,12 @@ class Plugin extends AppPlugin {
 
       .trc-refcount-badge-wrap.trc-hover-only .trc-refcount-badge {
         opacity: 0;
-        pointer-events: none;
       }
 
       .line-div:hover .trc-refcount-badge-wrap.trc-hover-only .trc-refcount-badge,
       .line-check-div:hover .trc-refcount-badge-wrap.trc-hover-only .trc-refcount-badge,
       .trc-refcount-badge-wrap.trc-hover-only:hover .trc-refcount-badge {
         opacity: ${this._opacity};
-        pointer-events: auto;
       }
     `);
   }
@@ -357,14 +357,58 @@ class Plugin extends AppPlugin {
       state.observerEl = null;
     }
 
-    const observer = new MutationObserver(() => {
+    const observer = new MutationObserver((mutations) => {
       if (state.ignoreMutationsUntil > Date.now()) return;
+      if (!this.hasReferenceRelevantMutation(mutations)) return;
       this.scheduleScan(state, { force: false, reason: 'dom-mutation' });
     });
 
-    observer.observe(panelEl, { childList: true, subtree: true });
+    observer.observe(panelEl, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'data-guid', 'data-ref-guid', 'data-record-guid', 'data-link-guid', 'data-root-id']
+    });
     state.observer = observer;
     state.observerEl = panelEl;
+  }
+
+  hasReferenceRelevantMutation(mutations) {
+    if (!Array.isArray(mutations) || mutations.length === 0) return false;
+
+    for (const m of mutations) {
+      if (!m) continue;
+
+      if (m.type === 'attributes') {
+        if (this.nodeHasReferenceHint(m.target)) return true;
+        continue;
+      }
+
+      if (m.type !== 'childList') continue;
+
+      const added = m.addedNodes || [];
+      for (const node of added) {
+        if (this.nodeHasReferenceHint(node)) return true;
+      }
+
+      const removed = m.removedNodes || [];
+      for (const node of removed) {
+        if (this.nodeHasReferenceHint(node)) return true;
+      }
+    }
+
+    return false;
+  }
+
+  nodeHasReferenceHint(node) {
+    if (!(node instanceof Element)) return false;
+    if (node.classList?.contains('trc-refcount-badge-wrap')) return false;
+
+    const selector = '.lineitem-ref, .lineitem-ref-title, .lineitem-lineref, .line-ref, .segment-ref, .record-link, [data-ref-guid], [data-record-guid], [data-link-guid], [data-guid], [data-root-id]';
+    if (node.matches?.(selector)) return true;
+    if (node.querySelector?.(selector)) return true;
+
+    return false;
   }
 
   handlePanelClosed(panel) {
@@ -402,6 +446,7 @@ class Plugin extends AppPlugin {
     if (!state) return;
 
     if (state.scanTimer) {
+      if (!force) return;
       clearTimeout(state.scanTimer);
       state.scanTimer = null;
     }
@@ -443,11 +488,13 @@ class Plugin extends AppPlugin {
     const seq = (state.scanSeq || 0) + 1;
     state.scanSeq = seq;
 
-    state.ignoreMutationsUntil = Date.now() + 80;
-    this.clearBadgesInElement(editorRoot);
-
     const refs = this.collectReferenceTargets(editorRoot);
-    if (refs.length === 0) return;
+    const activeTargets = new Set(refs.map((x) => x.anchor || x.el));
+    if (refs.length === 0) {
+      state.ignoreMutationsUntil = Date.now() + 140;
+      this.removeOrphanBadges(editorRoot, activeTargets);
+      return;
+    }
 
     const uniqueGuids = Array.from(new Set(refs.map((x) => x.guid)));
     const counts = new Map();
@@ -462,13 +509,17 @@ class Plugin extends AppPlugin {
     if (!this._panelStates.has(panelId)) return;
     if (state.scanSeq !== seq) return;
 
-    state.ignoreMutationsUntil = Date.now() + 120;
+    state.ignoreMutationsUntil = Date.now() + 180;
     for (const ref of refs) {
       const info = counts.get(ref.guid) || { count: 0, capped: false };
-      if (!this._showZero && info.count <= 0) continue;
-      if (info.count < this._minCount) continue;
-      this.insertBadge(ref.el, ref.guid, info, panel);
+      if ((!this._showZero && info.count <= 0) || info.count < this._minCount) {
+        this.removeBadgeFromTarget(ref.anchor || ref.el);
+        continue;
+      }
+      this.upsertBadge(ref.anchor || ref.el, ref.guid, info);
     }
+
+    this.removeOrphanBadges(editorRoot, activeTargets);
   }
 
   findEditorRoot(panelEl) {
@@ -490,6 +541,71 @@ class Plugin extends AppPlugin {
         el.remove();
       } catch (e) {
         // ignore
+      }
+    }
+
+    const anchors = rootEl.querySelectorAll('.trc-ref-anchor');
+    for (const anchor of anchors) {
+      if (!anchor.querySelector('.trc-refcount-badge-wrap')) {
+        anchor.style.removeProperty('margin-right');
+        anchor.removeAttribute('data-trc-original-inline-margin-right');
+        anchor.classList.remove('trc-ref-anchor');
+      }
+    }
+  }
+
+  removeBadgeFromTarget(targetEl) {
+    if (!targetEl?.querySelectorAll) return;
+
+    const directBadges = targetEl.querySelectorAll(':scope > .trc-refcount-badge-wrap');
+    for (const badge of directBadges) {
+      try {
+        badge.remove();
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    let sibling = targetEl.nextElementSibling;
+    while (sibling?.classList?.contains('trc-refcount-badge-wrap')) {
+      const next = sibling.nextElementSibling;
+      try {
+        sibling.remove();
+      } catch (e) {
+        // ignore
+      }
+      sibling = next;
+    }
+
+    if (!targetEl.querySelector(':scope > .trc-refcount-badge-wrap')) {
+      targetEl.style.removeProperty('margin-right');
+      targetEl.removeAttribute('data-trc-original-inline-margin-right');
+      targetEl.classList.remove('trc-ref-anchor');
+    }
+  }
+
+  removeOrphanBadges(editorRoot, activeTargets) {
+    if (!editorRoot?.querySelectorAll) return;
+
+    const badges = editorRoot.querySelectorAll('.trc-refcount-badge-wrap');
+    for (const badge of badges) {
+      const parent = badge.parentElement;
+      const anchored = parent && activeTargets.has(parent);
+      if (anchored) continue;
+
+      try {
+        badge.remove();
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    const anchors = editorRoot.querySelectorAll('.trc-ref-anchor');
+    for (const anchor of anchors) {
+      if (!activeTargets.has(anchor) || !anchor.querySelector('.trc-refcount-badge-wrap')) {
+        anchor.style.removeProperty('margin-right');
+        anchor.removeAttribute('data-trc-original-inline-margin-right');
+        anchor.classList.remove('trc-ref-anchor');
       }
     }
   }
@@ -518,19 +634,70 @@ class Plugin extends AppPlugin {
     const nodes = editorRoot.querySelectorAll(selectors);
     const out = [];
     const seen = new Set();
+    const seenTargets = new Set();
 
-    for (const el of nodes) {
-      if (seen.has(el)) continue;
-      seen.add(el);
+    for (const node of nodes) {
+      if (seen.has(node)) continue;
+      seen.add(node);
+
+      const el = this.resolveReferenceTargetElement(node);
+      if (!el) continue;
+      if (seenTargets.has(el)) continue;
+      seenTargets.add(el);
 
       if (!this.isLikelyReferenceElement(el)) continue;
       const guid = this.extractRecordGuidFromElement(el);
       if (!guid) continue;
 
-      out.push({ el, guid });
+      const anchor = this.resolveBadgeAnchorElement(el);
+      if (!anchor) continue;
+
+      out.push({ el, guid, anchor });
     }
 
     return out;
+  }
+
+  resolveBadgeAnchorElement(refEl) {
+    if (!refEl || refEl.nodeType !== 1) return null;
+
+    const directArrow = refEl.querySelector(':scope > .lineitem-lineref');
+    if (directArrow) return directArrow;
+
+    const anyArrow = refEl.querySelector('.lineitem-lineref');
+    if (anyArrow) return anyArrow;
+
+    return refEl;
+  }
+
+  resolveReferenceTargetElement(node) {
+    if (!node || node.nodeType !== 1) return null;
+    if (node.closest('.trc-refcount-badge-wrap')) return null;
+
+    const refRoot = node.closest('.lineitem-ref');
+    if (refRoot?.classList?.contains('lineitem-ref')) {
+      return refRoot;
+    }
+
+    if (node.classList?.contains('lineitem-lineref')) {
+      return null;
+    }
+
+    let el = node;
+    for (let depth = 0; el && depth < 4; depth += 1) {
+      if (
+        el.hasAttribute('data-ref-guid') ||
+        el.hasAttribute('data-record-guid') ||
+        el.hasAttribute('data-link-guid') ||
+        el.hasAttribute('data-guid') ||
+        el.hasAttribute('data-root-id')
+      ) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+
+    return node;
   }
 
   isLikelyReferenceElement(el) {
@@ -546,6 +713,8 @@ class Plugin extends AppPlugin {
     if (
       cls.includes('trc-refcount') ||
       cls.includes('listitem-indentline') ||
+      cls.includes('lineref') ||
+      cls.includes('link-menu-opener') ||
       el.classList.contains('line-div') ||
       el.classList.contains('line-check-div') ||
       el.classList.contains('listitem')
@@ -675,51 +844,54 @@ class Plugin extends AppPlugin {
     return name;
   }
 
-  insertBadge(targetEl, guid, info, panel) {
+  upsertBadge(targetEl, guid, info) {
     if (!targetEl?.isConnected) return;
     if (targetEl.closest('.trc-refcount-badge-wrap')) return;
 
-    const existing = targetEl.nextElementSibling;
-    if (existing?.classList?.contains('trc-refcount-badge-wrap')) {
+    targetEl.classList.add('trc-ref-anchor');
+    targetEl.style.removeProperty('margin-right');
+    targetEl.removeAttribute('data-trc-original-inline-margin-right');
+
+    let legacy = targetEl.nextElementSibling;
+    while (legacy?.classList?.contains('trc-refcount-badge-wrap')) {
+      const next = legacy.nextElementSibling;
       try {
-        existing.remove();
+        legacy.remove();
       } catch (e) {
         // ignore
       }
+      legacy = next;
     }
 
-    const wrap = document.createElement('span');
-    wrap.className = 'trc-refcount-badge-wrap';
+    let wrap = targetEl.querySelector(':scope > .trc-refcount-badge-wrap');
+    if (!wrap) {
+      wrap = document.createElement('span');
+      wrap.className = 'trc-refcount-badge-wrap';
+      try {
+        targetEl.appendChild(wrap);
+      } catch (e) {
+        return;
+      }
+    }
+
+    wrap.classList.remove('trc-size-xsmall', 'trc-size-small', 'trc-size-medium', 'trc-size-large');
     wrap.classList.add(this._fontScaleClass);
-    if (this._hoverOnly) wrap.classList.add('trc-hover-only');
+    wrap.classList.toggle('trc-hover-only', this._hoverOnly);
     wrap.dataset.guid = guid;
 
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'trc-refcount-badge button-none button-small button-minimal-hover text-details tooltip';
-    btn.textContent = this.formatCountLabel(info);
+    let label = wrap.querySelector(':scope > .trc-refcount-badge');
+    if (!label) {
+      label = document.createElement('span');
+      label.className = 'trc-refcount-badge text-details';
+      label.setAttribute('aria-hidden', 'true');
+      wrap.appendChild(label);
+    }
+
+    label.textContent = this.formatCountLabel(info);
 
     const recordName = this.getOrLoadRecordName(guid);
     const tooltip = `${info.count}${info.capped ? '+' : ''} references to ${recordName}`;
-    btn.title = `${tooltip} (Ctrl/Cmd-click to open in a new panel)`;
-    btn.dataset.tooltip = tooltip;
-    btn.dataset.tooltipDir = 'top';
-    btn.setAttribute('aria-label', tooltip);
-
-    btn.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
-      void this.openTargetRecord(panel, guid, ev);
-    });
-
-    wrap.appendChild(btn);
-
-    try {
-      targetEl.insertAdjacentElement('afterend', wrap);
-    } catch (e) {
-      // ignore
-    }
+    wrap.setAttribute('title', tooltip);
   }
 
   formatCountLabel(info) {
@@ -729,39 +901,6 @@ class Plugin extends AppPlugin {
       return `${compact}k${info?.capped ? '+' : ''}`;
     }
     return `${count}${info?.capped ? '+' : ''}`;
-  }
-
-  async openTargetRecord(panel, guid, ev) {
-    if (!panel) return;
-
-    const workspaceGuid = this.getWorkspaceGuid?.() || null;
-    if (!workspaceGuid) return;
-
-    const openInNew = ev?.metaKey === true || ev?.ctrlKey === true;
-    if (openInNew) {
-      try {
-        const newPanel = await this.ui.createPanel({ afterPanel: panel });
-        if (!newPanel) return;
-        newPanel.navigateTo({
-          type: 'edit_panel',
-          rootId: guid,
-          subId: null,
-          workspaceGuid
-        });
-        this.ui.setActivePanel(newPanel);
-      } catch (e) {
-        // ignore
-      }
-      return;
-    }
-
-    panel.navigateTo({
-      type: 'edit_panel',
-      rootId: guid,
-      subId: null,
-      workspaceGuid
-    });
-    this.ui.setActivePanel(panel);
   }
 
   async getCountInfoForGuid(guid) {
@@ -855,34 +994,83 @@ class Plugin extends AppPlugin {
     this._recordNameCache.clear();
   }
 
-  handleReferenceMutation(reason) {
-    this.clearCountCache();
-    this.refreshAllPanels({ force: false, reason: reason || 'reference-mutation' });
-  }
-
   handleLineItemUpdated(ev) {
-    let touchedAny = false;
+    if (!(ev?.hasSegments?.()) || typeof ev.getSegments !== 'function') return;
 
-    if (ev?.hasSegments?.() && typeof ev.getSegments === 'function') {
-      const segments = ev.getSegments() || [];
-      for (const seg of segments) {
-        if (seg?.type !== 'ref') continue;
+    const lineGuid = typeof ev.lineItemGuid === 'string' ? ev.lineItemGuid : null;
+    const segments = ev.getSegments() || [];
+    const currentRefs = this.extractRefGuidsFromSegments(segments);
 
-        let guid = '';
-        if (typeof seg.text === 'string') guid = seg.text;
-        else if (seg.text && typeof seg.text.guid === 'string') guid = seg.text.guid;
-        guid = (guid || '').trim();
+    const previousRefs = lineGuid ? (this._lineRefGuids.get(lineGuid) || new Set()) : new Set();
+    if (lineGuid) {
+      this._lineRefGuids.set(lineGuid, currentRefs);
+    }
 
-        if (!guid) continue;
+    const refsChanged = !lineGuid || !this.areSetsEqual(previousRefs, currentRefs);
+    if (refsChanged) {
+      const affected = new Set([...previousRefs, ...currentRefs]);
+      for (const guid of affected) {
         this._countCache.delete(guid);
-        touchedAny = true;
+        this._recordNameCache.delete(guid);
       }
     }
 
-    if (!touchedAny) {
-      this.clearCountCache();
+    if (currentRefs.size === 0 && previousRefs.size === 0) return;
+
+    this.refreshAllPanels({
+      force: false,
+      reason: refsChanged ? 'lineitem.ref-change' : 'lineitem.ref-redraw'
+    });
+  }
+
+  handleLineItemDeleted(ev) {
+    const lineGuid = typeof ev?.lineItemGuid === 'string' ? ev.lineItemGuid : null;
+    if (!lineGuid) return;
+
+    const previousRefs = this._lineRefGuids.get(lineGuid) || null;
+    this._lineRefGuids.delete(lineGuid);
+    if (!previousRefs || previousRefs.size === 0) return;
+
+    for (const guid of previousRefs) {
+      this._countCache.delete(guid);
+      this._recordNameCache.delete(guid);
     }
 
-    this.refreshAllPanels({ force: false, reason: 'lineitem.updated' });
+    this.refreshAllPanels({ force: false, reason: 'lineitem.deleted' });
+  }
+
+  handleRecordUpdated(ev) {
+    const recordGuid = typeof ev?.recordGuid === 'string' ? ev.recordGuid : null;
+    if (!recordGuid) return;
+    this._recordNameCache.delete(recordGuid);
+  }
+
+  extractRefGuidsFromSegments(segments) {
+    const out = new Set();
+    if (!Array.isArray(segments)) return out;
+
+    for (const seg of segments) {
+      if (seg?.type !== 'ref') continue;
+
+      let guid = '';
+      if (typeof seg.text === 'string') guid = seg.text;
+      else if (seg.text && typeof seg.text.guid === 'string') guid = seg.text.guid;
+
+      guid = (guid || '').trim();
+      if (!guid) continue;
+      out.add(guid);
+    }
+
+    return out;
+  }
+
+  areSetsEqual(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    if (a.size !== b.size) return false;
+    for (const value of a) {
+      if (!b.has(value)) return false;
+    }
+    return true;
   }
 }
