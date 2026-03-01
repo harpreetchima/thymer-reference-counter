@@ -267,6 +267,7 @@ class Plugin extends AppPlugin {
 
       .trc-refcount-badge {
         color: var(--text-muted, var(--text-default, var(--text, inherit)));
+        font-family: var(--ed-variable-width-font, var(--font-sans, inherit));
         font-weight: 650;
         line-height: 1;
         padding: 0;
@@ -963,17 +964,18 @@ class Plugin extends AppPlugin {
   async loadCountInfo(guid) {
     if (!this.isExistingRecordGuid(guid)) return { count: 0, capped: false };
 
+    if (this._countMode === 'records') {
+      const recordsInfo = await this.loadRecordBackReferenceCount(guid);
+      return { count: recordsInfo.count, capped: false };
+    }
+
     const linesInfo = await this.loadLineReferenceCount(guid);
     if (this._countMode === 'lines') {
       return { count: linesInfo.count, capped: linesInfo.capped };
     }
 
-    const recordsInfo = await this.loadRecordBackReferenceCount(guid);
-    if (this._countMode === 'records') {
-      return { count: recordsInfo.count, capped: false };
-    }
-
-    const combinedCount = this.combineLineAndPropertyCounts(linesInfo, recordsInfo);
+    const propertyInfo = await this.loadPropertyReferenceRecordCount(guid);
+    const combinedCount = this.combineLineAndPropertyCounts(linesInfo, propertyInfo);
     return {
       count: combinedCount,
       capped: linesInfo.capped
@@ -1039,12 +1041,125 @@ class Plugin extends AppPlugin {
     };
   }
 
-  combineLineAndPropertyCounts(linesInfo, recordsInfo) {
-    if (!linesInfo || !recordsInfo) return 0;
+  async loadPropertyReferenceRecordCount(targetGuid) {
+    if (!targetGuid) {
+      return {
+        count: 0,
+        recordGuids: new Set()
+      };
+    }
+
+    const allRecords = this.data.getAllRecords?.() || [];
+    const recordGuids = new Set();
+
+    for (const src of allRecords || []) {
+      const srcGuid = src?.guid || '';
+      if (!srcGuid) continue;
+      if (!this._showSelf && srcGuid === targetGuid) continue;
+
+      const props = src.getAllProperties?.() || [];
+      let hit = false;
+      for (const prop of props || []) {
+        if (!this.propertyReferencesGuid(prop, targetGuid)) continue;
+        hit = true;
+        break;
+      }
+
+      if (hit) recordGuids.add(srcGuid);
+    }
+
+    return {
+      count: recordGuids.size,
+      recordGuids
+    };
+  }
+
+  propertyReferencesGuid(prop, targetGuid) {
+    if (!prop || !targetGuid) return false;
+
+    const values = this.getPropertyCandidateValues(prop);
+    for (const v of values) {
+      if (v === targetGuid) return true;
+    }
+    return false;
+  }
+
+  getPropertyCandidateValues(prop) {
+    const out = [];
+    const seen = new Set();
+
+    const push = (v) => {
+      if (typeof v !== 'string') return;
+      const t = v.trim();
+      if (!t) return;
+      if (seen.has(t)) return;
+      seen.add(t);
+      out.push(t);
+    };
+
+    let raw = [];
+    try {
+      raw.push(prop.text?.());
+    } catch (e) {
+      // ignore
+    }
+    try {
+      raw.push(prop.choice?.());
+    } catch (e) {
+      // ignore
+    }
+
+    for (const r of raw) {
+      for (const v of this.expandPossibleListString(r)) {
+        push(v);
+      }
+    }
+
+    return out;
+  }
+
+  expandPossibleListString(v) {
+    if (typeof v !== 'string') return [];
+    const t = v.trim();
+    if (!t) return [];
+
+    if (t.startsWith('[') && t.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(t);
+        if (Array.isArray(parsed)) {
+          return parsed
+            .filter((x) => typeof x === 'string')
+            .map((x) => x.trim())
+            .filter(Boolean);
+        }
+      } catch (e) {
+        // fall through
+      }
+    }
+
+    if (t.includes(',')) {
+      return t
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean);
+    }
+
+    if (t.includes('\n')) {
+      return t
+        .split(/\r?\n/)
+        .map((x) => x.trim())
+        .filter(Boolean);
+    }
+
+    return [t];
+  }
+
+  combineLineAndPropertyCounts(linesInfo, propertyInfo) {
+    if (!linesInfo || !propertyInfo) return 0;
     if (linesInfo.capped) return linesInfo.count;
 
     let propertyOnlyRecords = 0;
-    for (const recordGuid of recordsInfo.recordGuids || []) {
+    for (const recordGuid of propertyInfo.recordGuids || []) {
       if (linesInfo.sourceRecordGuids?.has(recordGuid)) continue;
       propertyOnlyRecords += 1;
     }

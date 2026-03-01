@@ -1,3 +1,5 @@
+![Reference Counter Screenshot](screenshot-2026-03-01_06-40-42.png)
+
 # Thymer Reference Counter
 
 Adds inline reference counters next to record references in the editor.
