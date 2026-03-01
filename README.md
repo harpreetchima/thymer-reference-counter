@@ -10,7 +10,8 @@ Built for [Thymer](https://thymer.com/) using the [Thymer Plugin SDK](https://gi
 - Count mode based on:
   - `lines`: number of matching line-item references (`@linkto = "<guid>"`)
   - `records`: number of records that back-reference the target record
-- Counters are display-only (non-clickable).
+  - `combined` (default): line-item refs + property-only backref records
+- Counters are display-only (non-clickable) to avoid text-flow shifts while editing.
 - Includes command-palette toggles for:
   - inline counters on/off
   - hover-only display on/off
@@ -38,11 +39,11 @@ Edit `custom` in `plugin.json`:
 
 - `enabledByDefault` (boolean): initial state for inline counters.
 - `hoverOnlyByDefault` (boolean): start with hidden-until-hover counters.
-- `countMode` (`"lines" | "records"`): counting strategy.
+- `countMode` (`"combined" | "lines" | "records"`): counting strategy. Default is `combined`.
 - `minCount` (number): only show badges at or above this count.
 - `showZero` (boolean): show a badge when count is zero.
 - `showSelf` (boolean): include self-references.
-- `maxResults` (number): query cap when `countMode` is `lines`.
+- `maxResults` (number): query cap when `countMode` is `lines` or `combined`.
 - `cacheTtlMs` (number): local cache lifetime for computed counts.
 - `refreshDebounceMs` (number): debounce delay for mutation-driven rescans.
 - `opacity` (number `0.1..1`): counter opacity.
@@ -54,6 +55,7 @@ Edit `custom` in `plugin.json`:
 - Styling is native-first: it uses Thymer text/color tokens and keeps counters visually tied to reference arrows.
 - If Thymer changes editor markup in future versions, selector tuning may be needed.
 - For `countMode = "lines"`, very large backlink sets are capped by `maxResults` and shown as `N+`.
+- For `countMode = "combined"`, very large backlink sets are also capped by `maxResults`; when capped, the displayed value is a lower bound and shown as `N+`.
 
 ## Verification checklist
 

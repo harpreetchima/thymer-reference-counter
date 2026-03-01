@@ -24,7 +24,7 @@ class Plugin extends AppPlugin {
     this._enabled = this.loadBoolSetting(this._storageKeyEnabled, this._defaultEnabled);
     this._hoverOnly = this.loadBoolSetting(this._storageKeyHoverOnly, this._defaultHoverOnly);
 
-    this._countMode = custom.countMode === 'records' ? 'records' : 'lines';
+    this._countMode = this.normalizeCountMode(custom.countMode);
     this._minCount = this.coercePositiveInt(custom.minCount, 1);
     this._showZero = custom.showZero === true;
     this._showSelf = custom.showSelf === true;
@@ -235,6 +235,14 @@ class Plugin extends AppPlugin {
     if (raw === 'small') return 'trc-size-small';
     if (raw === 'large') return 'trc-size-large';
     return 'trc-size-medium';
+  }
+
+  normalizeCountMode(value) {
+    const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    if (raw === 'lines') return 'lines';
+    if (raw === 'records') return 'records';
+    if (raw === 'combined') return 'combined';
+    return 'combined';
   }
 
   injectCss() {
@@ -955,22 +963,37 @@ class Plugin extends AppPlugin {
   async loadCountInfo(guid) {
     if (!this.isExistingRecordGuid(guid)) return { count: 0, capped: false };
 
-    if (this._countMode === 'records') {
-      const record = this.data.getRecord?.(guid) || null;
-      if (!record?.getBackReferenceRecords) return { count: 0, capped: false };
-
-      const refs = await record.getBackReferenceRecords();
-      let records = Array.isArray(refs) ? refs : [];
-      if (!this._showSelf) records = records.filter((x) => x?.guid !== guid);
-      return { count: records.length, capped: false };
+    const linesInfo = await this.loadLineReferenceCount(guid);
+    if (this._countMode === 'lines') {
+      return { count: linesInfo.count, capped: linesInfo.capped };
     }
 
+    const recordsInfo = await this.loadRecordBackReferenceCount(guid);
+    if (this._countMode === 'records') {
+      return { count: recordsInfo.count, capped: false };
+    }
+
+    const combinedCount = this.combineLineAndPropertyCounts(linesInfo, recordsInfo);
+    return {
+      count: combinedCount,
+      capped: linesInfo.capped
+    };
+  }
+
+  async loadLineReferenceCount(guid) {
     const query = `@linkto = "${guid}"`;
     const result = await this.data.searchByQuery(query, this._maxResults);
-    if (result?.error) return { count: 0, capped: false };
+    if (result?.error) {
+      return {
+        count: 0,
+        capped: false,
+        sourceRecordGuids: new Set()
+      };
+    }
 
     const lines = Array.isArray(result?.lines) ? result.lines : [];
-    const unique = new Set();
+    const uniqueLineRefs = new Set();
+    const sourceRecordGuids = new Set();
     let fallbackIdx = 0;
 
     for (const line of lines) {
@@ -979,13 +1002,54 @@ class Plugin extends AppPlugin {
       if (!this._showSelf && sourceRecordGuid === guid) continue;
 
       const key = line.guid || `${sourceRecordGuid}:${fallbackIdx++}`;
-      unique.add(key);
+      uniqueLineRefs.add(key);
+      if (sourceRecordGuid) sourceRecordGuids.add(sourceRecordGuid);
     }
 
     return {
-      count: unique.size,
-      capped: lines.length >= this._maxResults
+      count: uniqueLineRefs.size,
+      capped: lines.length >= this._maxResults,
+      sourceRecordGuids
     };
+  }
+
+  async loadRecordBackReferenceCount(guid) {
+    const record = this.data.getRecord?.(guid) || null;
+    if (!record?.getBackReferenceRecords) {
+      return {
+        count: 0,
+        recordGuids: new Set()
+      };
+    }
+
+    const refs = await record.getBackReferenceRecords();
+    let records = Array.isArray(refs) ? refs : [];
+    if (!this._showSelf) records = records.filter((x) => x?.guid !== guid);
+
+    const recordGuids = new Set();
+    for (const rec of records) {
+      const recGuid = rec?.guid || '';
+      if (!recGuid) continue;
+      recordGuids.add(recGuid);
+    }
+
+    return {
+      count: recordGuids.size,
+      recordGuids
+    };
+  }
+
+  combineLineAndPropertyCounts(linesInfo, recordsInfo) {
+    if (!linesInfo || !recordsInfo) return 0;
+    if (linesInfo.capped) return linesInfo.count;
+
+    let propertyOnlyRecords = 0;
+    for (const recordGuid of recordsInfo.recordGuids || []) {
+      if (linesInfo.sourceRecordGuids?.has(recordGuid)) continue;
+      propertyOnlyRecords += 1;
+    }
+
+    return linesInfo.count + propertyOnlyRecords;
   }
 
   clearCountCache() {

@@ -7,7 +7,7 @@
   "custom": {
     "enabledByDefault": true,
     "hoverOnlyByDefault": false,
-    "countMode": "lines",
+    "countMode": "combined",
     "minCount": 1,
     "showZero": false,
     "showSelf": false,
