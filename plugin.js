@@ -760,6 +760,18 @@ class Plugin extends AppPlugin {
       return false;
     }
 
+    // Explicit reference nodes should not be rejected by generic size heuristics
+    // (long quoted titles can exceed text-length thresholds).
+    const explicitRef =
+      el.classList.contains('lineitem-ref') ||
+      el.classList.contains('record-link') ||
+      el.classList.contains('line-ref') ||
+      el.classList.contains('segment-ref') ||
+      el.hasAttribute('data-ref-guid') ||
+      el.hasAttribute('data-record-guid') ||
+      el.hasAttribute('data-link-guid');
+    if (explicitRef) return true;
+
     const hasHint =
       cls.includes('ref') ||
       cls.includes('link') ||
