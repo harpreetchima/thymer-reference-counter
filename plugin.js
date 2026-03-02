@@ -14,6 +14,7 @@ class Plugin extends AppPlugin {
     this._recordExistsCache = new Map();
     this._recordNameCache = new Map();
     this._lineRefGuids = new Map();
+    this._sharedIgnoreMetaKey = 'plugin.refs.v1.ignore';
 
     this._storageKeyEnabled = 'thymer_reference_counter_enabled_v1';
     this._storageKeyHoverOnly = 'thymer_reference_counter_hover_only_v1';
@@ -266,6 +267,47 @@ class Plugin extends AppPlugin {
     if (raw === 'records') return 'records';
     if (raw === 'combined') return 'combined';
     return 'combined';
+  }
+
+  didSharedIgnoreChange(ev) {
+    const mp = ev?.metaProperties;
+    if (!mp || typeof mp !== 'object') return false;
+
+    if (Object.prototype.hasOwnProperty.call(mp, this._sharedIgnoreMetaKey)) return true;
+
+    const nested = mp?.plugin?.refs?.v1;
+    if (nested && Object.prototype.hasOwnProperty.call(nested, 'ignore')) return true;
+
+    return false;
+  }
+
+  normalizeSharedIgnoreValue(value) {
+    if (value === true || value === 1) return true;
+    if (typeof value === 'string') {
+      const v = value.trim().toLowerCase();
+      if (v === '1' || v === 'true' || v === 'yes' || v === 'on') return true;
+    }
+    return false;
+  }
+
+  readSharedIgnoreFromProps(props) {
+    if (!props || typeof props !== 'object') return false;
+
+    const direct = props?.[this._sharedIgnoreMetaKey];
+    if (this.normalizeSharedIgnoreValue(direct)) return true;
+
+    const underscore = props?.plugin_refs_v1_ignore;
+    if (this.normalizeSharedIgnoreValue(underscore)) return true;
+
+    const nested = props?.plugin?.refs?.v1?.ignore;
+    if (this.normalizeSharedIgnoreValue(nested)) return true;
+
+    return false;
+  }
+
+  isLineSharedIgnored(line) {
+    if (!line) return false;
+    return this.readSharedIgnoreFromProps(line?.props || null);
   }
 
   injectCss() {
@@ -1041,6 +1083,7 @@ class Plugin extends AppPlugin {
 
     for (const line of lines) {
       if (!line) continue;
+      if (this.isLineSharedIgnored(line)) continue;
       const sourceRecordGuid = line?.record?.guid || '';
       if (!this._showSelf && sourceRecordGuid === guid) continue;
 
@@ -1215,19 +1258,24 @@ class Plugin extends AppPlugin {
   }
 
   handleLineItemUpdated(ev) {
-    if (!(ev?.hasSegments?.()) || typeof ev.getSegments !== 'function') return;
+    const ignoreChanged = this.didSharedIgnoreChange(ev);
+    const hasSegments = ev?.hasSegments?.() && typeof ev.getSegments === 'function';
+    if (!hasSegments && !ignoreChanged) return;
 
     const lineGuid = typeof ev.lineItemGuid === 'string' ? ev.lineItemGuid : null;
-    const segments = ev.getSegments() || [];
-    const currentRefs = this.extractRefGuidsFromSegments(segments);
-
     const previousRefs = lineGuid ? (this._lineRefGuids?.get(lineGuid) || new Set()) : new Set();
-    if (lineGuid) {
+    let currentRefs = previousRefs;
+    if (hasSegments) {
+      const segments = ev.getSegments() || [];
+      currentRefs = this.extractRefGuidsFromSegments(segments);
+    }
+
+    if (lineGuid && hasSegments) {
       this._lineRefGuids?.set(lineGuid, currentRefs);
     }
 
-    const refsChanged = !lineGuid || !this.areSetsEqual(previousRefs, currentRefs);
-    if (refsChanged) {
+    const refsChanged = hasSegments ? (!lineGuid || !this.areSetsEqual(previousRefs, currentRefs)) : false;
+    if (refsChanged || ignoreChanged) {
       const affected = new Set([...previousRefs, ...currentRefs]);
       for (const guid of affected) {
         this._countCache?.delete(guid);
@@ -1239,7 +1287,7 @@ class Plugin extends AppPlugin {
 
     this.refreshAllPanels({
       force: false,
-      reason: refsChanged ? 'lineitem.ref-change' : 'lineitem.ref-redraw'
+      reason: refsChanged ? 'lineitem.ref-change' : ignoreChanged ? 'lineitem.ignore-change' : 'lineitem.ref-redraw'
     });
   }
 

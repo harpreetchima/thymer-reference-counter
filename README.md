@@ -14,6 +14,7 @@ Built for [Thymer](https://thymer.com/) using the [Thymer Plugin SDK](https://gi
   - `records`: number of records that back-reference the target record
   - `combined` (default): line-item refs + property-only backref records
 - Counters are display-only (non-clickable) to avoid text-flow shifts while editing.
+- Honors shared ignore metadata key `plugin.refs.v1.ignore` on source line items (ignored lines are excluded from counts).
 - Includes command-palette toggles for:
   - inline counters on/off
   - hover-only display on/off
@@ -55,6 +56,7 @@ Edit `custom` in `plugin.json`:
 
 - This plugin decorates editor DOM elements and uses record-guid discovery heuristics.
 - Styling is native-first: it uses Thymer text/color tokens and keeps counters visually tied to reference arrows.
+- Shared ignore metadata can be authored by other plugins (for example, Backreferences `Alt+Click` on a linked line) and is consumed here for counting.
 - If Thymer changes editor markup in future versions, selector tuning may be needed.
 - For `countMode = "lines"`, very large backlink sets are capped by `maxResults` and shown as `N+`.
 - For `countMode = "combined"`, very large backlink sets are also capped by `maxResults`; when capped, the displayed value is a lower bound and shown as `N+`.
