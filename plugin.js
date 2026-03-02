@@ -2,6 +2,9 @@ class Plugin extends AppPlugin {
   onLoad() {
     this._version = '0.1.0';
     this._pluginName = 'Reference Counter';
+    this._isUnloading = false;
+    this._initialRefreshTimer = null;
+    this.ensureRuntimeState();
 
     this._panelStates = new Map();
     this._eventHandlerIds = [];
@@ -50,12 +53,22 @@ class Plugin extends AppPlugin {
     const active = this.ui.getActivePanel?.() || null;
     if (active) this.handlePanelChanged(active, 'initial-active');
 
-    setTimeout(() => {
+    this._initialRefreshTimer = setTimeout(() => {
+      this._initialRefreshTimer = null;
+      if (this._isUnloading) return;
       this.refreshAllPanels({ force: true, reason: 'initial-delayed' });
     }, 350);
   }
 
   onUnload() {
+    this._isUnloading = true;
+    this.ensureRuntimeState();
+
+    if (this._initialRefreshTimer) {
+      clearTimeout(this._initialRefreshTimer);
+      this._initialRefreshTimer = null;
+    }
+
     for (const id of this._eventHandlerIds || []) {
       try {
         this.events.off(id);
@@ -74,15 +87,25 @@ class Plugin extends AppPlugin {
     }
     this._commandHandles = [];
 
-    for (const panelId of Array.from(this._panelStates.keys())) {
+    for (const panelId of Array.from(this._panelStates?.keys() || [])) {
       this.disposePanelState(panelId);
     }
 
-    this._panelStates.clear();
-    this._countCache.clear();
-    this._recordExistsCache.clear();
-    this._recordNameCache.clear();
-    this._lineRefGuids.clear();
+    this._panelStates?.clear();
+    this._countCache?.clear();
+    this._recordExistsCache?.clear();
+    this._recordNameCache?.clear();
+    this._lineRefGuids?.clear();
+  }
+
+  ensureRuntimeState() {
+    if (!(this._panelStates instanceof Map)) this._panelStates = new Map();
+    if (!Array.isArray(this._eventHandlerIds)) this._eventHandlerIds = [];
+    if (!Array.isArray(this._commandHandles)) this._commandHandles = [];
+    if (!(this._countCache instanceof Map)) this._countCache = new Map();
+    if (!(this._recordExistsCache instanceof Map)) this._recordExistsCache = new Map();
+    if (!(this._recordNameCache instanceof Map)) this._recordNameCache = new Map();
+    if (!(this._lineRefGuids instanceof Map)) this._lineRefGuids = new Map();
   }
 
   registerCommands() {
@@ -161,7 +184,7 @@ class Plugin extends AppPlugin {
     this.saveBoolSetting(this._storageKeyEnabled, this._enabled);
 
     if (!this._enabled) {
-      for (const state of this._panelStates.values()) {
+      for (const state of this._panelStates?.values() || []) {
         const panelEl = state?.panel?.getElement?.() || state?.panelEl || null;
         if (panelEl) this.clearBadgesInElement(panelEl);
       }
@@ -293,6 +316,7 @@ class Plugin extends AppPlugin {
   }
 
   handlePanelChanged(panel, reason) {
+    if (this._isUnloading) return;
     const panelId = panel?.getId?.() || null;
     if (!panelId) return;
 
@@ -332,8 +356,9 @@ class Plugin extends AppPlugin {
   }
 
   getOrCreatePanelState(panel) {
+    this.ensureRuntimeState();
     const panelId = panel?.getId?.() || 'unknown';
-    let state = this._panelStates.get(panelId) || null;
+    let state = this._panelStates?.get(panelId) || null;
     if (state) return state;
 
     state = {
@@ -348,7 +373,7 @@ class Plugin extends AppPlugin {
       ignoreMutationsUntil: 0
     };
 
-    this._panelStates.set(panelId, state);
+    this._panelStates?.set(panelId, state);
     return state;
   }
 
@@ -427,7 +452,7 @@ class Plugin extends AppPlugin {
   }
 
   disposePanelState(panelId) {
-    const state = this._panelStates.get(panelId) || null;
+    const state = this._panelStates?.get(panelId) || null;
     if (!state) return;
 
     if (state.scanTimer) {
@@ -448,11 +473,11 @@ class Plugin extends AppPlugin {
     const panelEl = state?.panel?.getElement?.() || state.panelEl || null;
     if (panelEl) this.clearBadgesInElement(panelEl);
 
-    this._panelStates.delete(panelId);
+    this._panelStates?.delete(panelId);
   }
 
   scheduleScan(state, { force, reason }) {
-    if (!state) return;
+    if (!state || this._isUnloading) return;
 
     if (state.scanTimer) {
       if (!force) return;
@@ -463,6 +488,7 @@ class Plugin extends AppPlugin {
     const delay = force ? 0 : this._refreshDebounceMs;
     state.scanTimer = setTimeout(() => {
       state.scanTimer = null;
+      if (this._isUnloading) return;
       this.scanPanel(state.panelId, reason || 'scheduled').catch(() => {
         // ignore
       });
@@ -470,13 +496,15 @@ class Plugin extends AppPlugin {
   }
 
   refreshAllPanels({ force, reason }) {
-    for (const state of this._panelStates.values()) {
+    if (this._isUnloading) return;
+    for (const state of this._panelStates?.values() || []) {
       this.scheduleScan(state, { force: force === true, reason: reason || 'all-panels' });
     }
   }
 
   async scanPanel(panelId, reason) {
-    const state = this._panelStates.get(panelId) || null;
+    if (this._isUnloading) return;
+    const state = this._panelStates?.get(panelId) || null;
     if (!state) return;
 
     const panel = state.panel || null;
@@ -515,7 +543,8 @@ class Plugin extends AppPlugin {
       })
     );
 
-    if (!this._panelStates.has(panelId)) return;
+    if (this._isUnloading) return;
+    if (!this._panelStates?.has(panelId)) return;
     if (state.scanSeq !== seq) return;
 
     state.ignoreMutationsUntil = Date.now() + 180;
@@ -1168,9 +1197,9 @@ class Plugin extends AppPlugin {
   }
 
   clearCountCache() {
-    this._countCache.clear();
-    this._recordExistsCache.clear();
-    this._recordNameCache.clear();
+    this._countCache?.clear();
+    this._recordExistsCache?.clear();
+    this._recordNameCache?.clear();
   }
 
   handleLineItemUpdated(ev) {
@@ -1180,17 +1209,17 @@ class Plugin extends AppPlugin {
     const segments = ev.getSegments() || [];
     const currentRefs = this.extractRefGuidsFromSegments(segments);
 
-    const previousRefs = lineGuid ? (this._lineRefGuids.get(lineGuid) || new Set()) : new Set();
+    const previousRefs = lineGuid ? (this._lineRefGuids?.get(lineGuid) || new Set()) : new Set();
     if (lineGuid) {
-      this._lineRefGuids.set(lineGuid, currentRefs);
+      this._lineRefGuids?.set(lineGuid, currentRefs);
     }
 
     const refsChanged = !lineGuid || !this.areSetsEqual(previousRefs, currentRefs);
     if (refsChanged) {
       const affected = new Set([...previousRefs, ...currentRefs]);
       for (const guid of affected) {
-        this._countCache.delete(guid);
-        this._recordNameCache.delete(guid);
+        this._countCache?.delete(guid);
+        this._recordNameCache?.delete(guid);
       }
     }
 
@@ -1206,13 +1235,13 @@ class Plugin extends AppPlugin {
     const lineGuid = typeof ev?.lineItemGuid === 'string' ? ev.lineItemGuid : null;
     if (!lineGuid) return;
 
-    const previousRefs = this._lineRefGuids.get(lineGuid) || null;
-    this._lineRefGuids.delete(lineGuid);
+    const previousRefs = this._lineRefGuids?.get(lineGuid) || null;
+    this._lineRefGuids?.delete(lineGuid);
     if (!previousRefs || previousRefs.size === 0) return;
 
     for (const guid of previousRefs) {
-      this._countCache.delete(guid);
-      this._recordNameCache.delete(guid);
+      this._countCache?.delete(guid);
+      this._recordNameCache?.delete(guid);
     }
 
     this.refreshAllPanels({ force: false, reason: 'lineitem.deleted' });
@@ -1221,7 +1250,7 @@ class Plugin extends AppPlugin {
   handleRecordUpdated(ev) {
     const recordGuid = typeof ev?.recordGuid === 'string' ? ev.recordGuid : null;
     if (!recordGuid) return;
-    this._recordNameCache.delete(recordGuid);
+    this._recordNameCache?.delete(recordGuid);
   }
 
   extractRefGuidsFromSegments(segments) {
